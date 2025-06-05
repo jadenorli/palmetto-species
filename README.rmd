@@ -3,7 +3,6 @@ title: "Florida Palmetto Species Classification with Binary Logistic Regression"
 output:
   github_document:
     toc: false
-bibliography: ./bibs/references.bib
 ---
 
 # Contents
