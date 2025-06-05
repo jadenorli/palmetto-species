@@ -72,7 +72,7 @@ This section defines the necessary files and explores preliminary data visualiza
 
 We begin by loading the full palmetto dataset and performing initial cleaning and recoding steps. The raw species indicator is numerically coded (1 or 2), so we recode `species` to 0 for [*Sabal etonia*]{style="color:#DCC27A;"} and 1 for [*Serenoa repens*]{style="color:#336886;"} to fit the binary regression setup. We also generate a human-readable `name` variable for labeling purposes.
 
-
+ 
 ```{r}
 #| code-fold: false
 
