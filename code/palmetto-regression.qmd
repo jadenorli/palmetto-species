@@ -1,0 +1,1544 @@
+---
+title: "Florida Palmetto Species Classification with Binary Logistic Regression"
+subtitle: '<span style="font-size: 30px; text-align: center; display: block;">Standard vs. Elastic Net Logistic Regression</span>'
+author: "Jaden Orli"
+date: last-modified
+bibliography: 
+ - ../code/references.bib
+execute: 
+  eval: true
+  message: false
+  warning: false 
+format:
+  html:
+    theme: minty
+    css: custom.css
+    toc: true
+    toc-title: "Table of Contents:"
+    toc-depth: 3
+    code-fold: true
+editor:
+  chunk_output_type: inline
+embed-resources: true
+---
+
+# I. Background
+
+Florida hosts a diversity of native palm species including two species of Palmetto, [*Sabal etonia*]{style="color:#DCC27A;"} and [*Serenoa repens*]{style="color:#336886;"}, that are endemic to the region. The Archbold Biological Station in south-central Florida encompasses an extensive area of Florida scrublands and is home to these endemic Palmetto species. This research institute has been collecting demographic data annually from 1981 to 1997, 2001 to 2017, and from 2022 to the present. Characteristics of these metrics including measurements of height (cm), canopy width (cm), canopy length (cm), and number of green leaves. These morphological features are measured over time to evaluate survival, growth, and potential species classification, providing a rich dataset for logistic regression modeling. 
+
+This analysis will develop and compare [four binary logistic regression models](#formula) (two standard logistic regressions and two elastic net regressions) to explore the feasibility of using the various parameters outlined above to correctly classify a plant as either [*Sabal etonia*]{style="color:#DCC27A;"} or [*Serenoa repens*]{style="color:#336886;"}. 
+
+# II. Load Libraries
+
+First, load the necessary packages for this analysis:
+
+```{r}
+#this clears out the environment
+rm(list = ls())
+
+#load necessary data packages
+
+##data management
+library(tidyverse)
+library(here)
+library(janitor)
+library(stringr)
+
+##data visualization
+library(kableExtra)
+library(calecopal)
+library(ggtext)
+library(ggbreak)
+library(htmltools)
+library(equatiomatic)
+
+##model construction
+library(tidymodels)
+
+##analysis
+library(yardstick)
+
+```
+
+# III. Set Up
+
+This section defines the necessary files and explores preliminary data visualizations:
+
+-   [a) Read Data](#read),
+-   [b) Color Palettes](#color), and
+-   [c) Exploratory Visualizations](#explore)
+
+## a) Read Data {#read}
+
+We begin by loading the full palmetto dataset and performing initial cleaning and recoding steps. The raw species indicator is numerically coded (1 or 2), so we recode `species` to 0 for [*Sabal etonia*]{style="color:#DCC27A;"} and 1 for [*Serenoa repens*]{style="color:#336886;"} to fit the binary regression setup. We also generate a human-readable `name` variable for labeling purposes.
+
+
+```{r}
+#| code-fold: false
+
+#set the seed for reproducibility
+set.seed(42)
+
+#read in the palmetto data
+palmetto_full <- read_csv(here("data", "palmetto.csv"))
+
+#tidy the data
+palmetto <- palmetto_full %>% 
+  select(plant, species, height, length, width, green_lvs) %>% 
+  mutate(species = if_else(species == 2, 0, 1)) %>% #reassign species 2 to be species 0
+  mutate(name = case_when(species == 0 ~ "sabal_etonia", #create a name column
+                          species == 1 ~ "serenoa_repens")) %>% 
+  mutate(species = factor(species, #make species a class factor 
+                          levels = c(0, 1),
+                          labels = c("Sabal etonia", "Serenoa repens"))) %>% 
+  mutate(name = factor(name, #make species a class factor 
+                       levels = c("sabal_etonia", "serenoa_repens"),
+                       labels = c("Sabal etonia", "Serenoa repens")))
+
+```
+
+## b) Color Palettes {#color}
+
+Now we can define the color palettes to be used throughout this analysis
+
+```{r}
+#generate a palette from the calecopal arbutus color palette
+arbutus_palette <- cal_palette(name = "arbutus", n = 5)
+
+#create a vector of selected hex codes from the arbutus_palette
+hex_codes <- c("#336886", "#B5C861", "#DCC27A", "#CB8573", "#976153")
+
+```
+
+### i) Palmetto Species
+
+From this palette we can assign each a color to each Palmetto species:
+
+1.  [***Sabal etonia***]{style="color:#DCC27A;"}
+2.  [***Serenoa repens***]{style="color:#336886;"}
+
+```{r}
+#create a vector assigning a color to each of the species names 
+species_colors <- c("sabal_etonia" = "#DCC27A",
+                    "Sabal etonia" = "#DCC27A",
+                    "serenoa_repens" = "#336886",
+                    "Serenoa repens" = "#336886")
+
+```
+
+### ii) Prediction Classification Types
+
+We can also define the colors that will be used to identify if a model correctly ([**True**]{style="color:#B5C861;"}) or incorrectly ([**False**]{style="color:#CB8573;"}) predicted the actual species when trained on real observations.
+
+```{r}
+#create a vector assigning a color to classification types
+classification_colors <- c("True" = "#B5C861",
+                           "False" = "#CB8573")
+
+```
+
+## c) Exploratory Visualizations {#explore}
+
+To start our analysis process, we will begin by generating various graphics to explore the relationship between our variables of interest.
+
+### i) Data Wrangling
+
+As always, this process starts with some data wrangling.
+
+```{r}
+#pivot longer so we can visualize each numeric variable
+palmetto_long <- palmetto %>%
+  pivot_longer(cols = c(height, length, width, green_lvs),
+               names_to = "variable",
+               values_to = "value") %>% 
+  select(-plant) %>% 
+  mutate(axis_labels = case_when(variable == "height" ~ "Maximum Height (cm)",
+                                 variable == "length" ~ "Canopy Length (cm)",
+                                 variable == "width" ~ "Canopy Width (cm)",
+                                 variable == "green_lvs" ~ "Count of Green Leaves")) %>% 
+  mutate(axis_labels = factor(axis_labels))
+
+```
+
+### ii) Compare Predictor Variables
+
+Now that we have tided the data, we can create a violin plot to compare the distribution of each predictor variable between both Palmetto species. We then overlaid each plot with a boxplot to more easily visualize the summary statistics.
+
+```{r}
+#create a violin plot to visualize the variable (height, length, width, green_lvs) spread for each species
+violin_plots <- ggplot(palmetto_long, aes(x = species, y = value, fill = name)) +
+  geom_violin(trim = FALSE, alpha = 0.7) + #add a violin plot
+  scale_fill_manual(values = species_colors,
+                    labels = c("Sabal etonia", "Serenoa repens")) +
+  geom_boxplot(width = 0.1, fill = "white", alpha = 0.7, outlier.shape = NA) +  #add a boxplot for summary stats
+  facet_wrap(~axis_labels, #create a plot for each variable
+             scales = "free_y") +
+  labs(title = "Spread of Predictor Variables by Species:",
+       subtitle = expression("<i>Serenoa repens</i> and <i>Sabal etonia</i>"),
+       x = "Species",
+       y = "Value",
+       fill = "Palmetto Species:") +
+  theme(plot.title = element_text(family = "Times New Roman",
+                                  size = 16,
+                                  hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_markdown(family = "Times New Roman",
+                                         size = 12,
+                                         hjust = 0.5),
+        axis.title = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 13),
+        axis.text = element_text(family = "Times New Roman", 
+                                 size = 10),
+        axis.text.x = element_text(face = "italic"),
+        strip.text = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 10),
+        legend.position = "bottom",
+        legend.title = element_text(family = "Times New Roman",
+                                    face = "bold",
+                                    size = 12),
+        legend.text = element_text(family = "Times New Roman",
+                                   face = "italic",
+                                   size = 10),
+        legend.box.background = element_rect(color = "black", size = 1))
+
+#print the plot
+violin_plots
+
+```
+
+When examining each individual variable, we see that canopy length, canopy width, and maximum height have a unimodal distribution indicating low variability within the species. However, upon further examination, it is apparent that they *also* have a similar median and spread when comparing across species. This indicates that these variables **alone** are **not** strong predictors of species. In contrast, the number of green leaves has a multimodal distribution with relatively high levels of spread between species. This metric appears to be the only selected predictor variable in which either species appears to have a slightly different median and spread across the sample.
+
+### iii) Visualize Predictor Distribution
+
+To further examine this relationship, we can create a density plot to show the entire probability distribution for each variable and compare between species.
+
+```{r}
+#create density plots to visualize the variable (height, length, width, green_lvs) distributions for each species
+density_plots <- ggplot(palmetto_long, aes(x = value, fill = name)) +
+  geom_density(alpha = 0.5, linewidth = 0.5) +
+  facet_wrap(~axis_labels, scales = "free") +
+  scale_fill_manual(values = species_colors,
+                    labels = c("Sabal etonia", "Serenoa repens")) +
+  labs(title = "Density Distribution of Predictor Variables by Species",
+       subtitle = expression("<i>Serenoa repens</i> and <i>Sabal etonia</i>"),
+       x = "Value",
+       y = "Density",
+       fill = "Palmetto Species") +
+  theme(plot.title = element_text(family = "Times New Roman",
+                                  size = 16,
+                                  hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_markdown(family = "Times New Roman",
+                                         size = 12,
+                                         hjust = 0.5),
+        axis.title = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 13),
+        axis.text = element_text(family = "Times New Roman", 
+                                   size = 8),
+        strip.text = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 10),
+        legend.position = "bottom",
+        legend.title = element_text(family = "Times New Roman",
+                                    face = "bold",
+                                    size = 12),
+        legend.text = element_text(family = "Times New Roman",
+                                   face = "italic",
+                                   size = 10),
+        legend.box.background = element_rect(color = "black", size = 1))
+
+#print the plot
+density_plots
+
+```
+
+When examining the three variable with a unimodal distribution (length, width, and height), it appears that canopy length is likely the strongest predictor of species with these plots having the least overlap between species. On the other hand, the maximum height variable is likely not a strong predictor of species since the plots align nearly perfectly when overlaid. Canopy width also appears to lack significant difference between species. However, out of all the variables, the count of green leaves shows the most **distinct** distributions across species suggesting it may be a **significant** factor in classification accuracy.
+
+# IV. Partition Data
+
+Now that we understand the general characteristics of each predictor variable, we can partition the dataset into two dataframes; one to train the model and one to test the model. This ensures that model evaluation is conducted on previously unseen data.
+
+## a) Evaluate Full Dataset
+
+First, we want to determine the relative proportion of each species in the full dataset because we will need to ensure that this class stratification is maintained in both the training data and the testing data when we perform the split.
+
+```{r}
+#create a dataframe with a summary of the proportion of each species for the full dataset
+palmetto_full_sum <- palmetto %>%
+  group_by(species) %>% #group the data by the species column
+  summarize(Count = n()) %>% #determine the number of entries for each species
+  ungroup() %>%
+  mutate(Proportion = round((Count / sum(Count)), 3)) %>%  #calculate the proportion of each species 
+  select(species, Count, Proportion) %>% 
+  add_column(Dataset = "Full", .before = "species")
+
+```
+
+## b) Split Dataset
+
+To ensure that both species are proportionally represented in the training and testing datasets, we perform a stratified split using the `initial_split()` function. We allocate 80% of the data to model training and reserve 20% for testing. Stratification is done by species to preserve the class distribution across subsets.
+
+
+```{r}
+#tidy the dataframe before splitting
+palmetto_presplit <- palmetto %>% 
+  select(-plant) #remove the unnecessary column
+
+#split the data into 80% for training/building the model and 20% for testing the model
+palmetto_split <- initial_split(palmetto_presplit,
+                                prop = 0.80, #80% training data
+                                strata = species) #stratified by species 
+
+#create the training dataframe from the split 
+palmetto_train <- training(palmetto_split)
+
+#create the testing dataframe from the split 
+palmetto_test <- testing(palmetto_split)
+
+```
+
+## c) Proportions Across Datasets
+
+After splitting the data, we need to ensure that the species stratification was maintained in both the training data and the testing data.
+
+### i) Training Data
+
+```{r}
+#| code-fold: false
+
+#create a dataframe with a summary of the proportion of each species for the training dataset
+palmetto_train_sum <- palmetto_train %>%
+  group_by(species) %>% #group the data by the species column
+  summarize(Count = n()) %>% #determine the number of entries for each species
+  ungroup() %>%
+  mutate(Proportion = round((Count / sum(Count)), 3)) %>%  #calculate the proportion of each species 
+  select(species, Count, Proportion) %>% 
+  add_column(Dataset = "Training", .before = "species")
+
+```
+
+### ii) Testing Data
+
+```{r}
+#| code-fold: false
+
+#create a dataframe with a summary of the proportion of each species for the testing dataset
+palmetto_test_sum <- palmetto_test %>%
+  group_by(species) %>% #group the data by the species column
+  summarize(Count = n()) %>% #determine the number of entries for each species
+  ungroup() %>%
+  mutate(Proportion = round((Count / sum(Count)), 3)) %>%  #calculate the proportion of each species 
+  select(species, Count, Proportion) %>% 
+  add_column(Dataset = "Testing", .before = "species")
+
+```
+
+### iii) Comparison Summary
+
+```{r}
+#combine the results into a single table
+combined <- bind_rows(palmetto_full_sum, palmetto_train_sum, palmetto_test_sum)
+
+#create a kable from the results 
+combined_kable <- kable(combined,
+                        col.names = c("Dataset", "Species", "Count", "Proportion"),
+                        kable_title = htmltools::tags$div(style = "text-align: center; font-size: 20px;", htmltools::tags$strong("Proportions of Species Across All Datasets")),
+                        escape = FALSE) %>%
+  kable_styling(full_width = FALSE, font_size = "0.8em", position = "center") %>%
+  column_spec(column = 1, width = "8em", bold = TRUE) %>% 
+  column_spec(column = 2, width = "8em", italic = TRUE) %>% 
+  column_spec(column = 3:4, width = "6em") %>% 
+  row_spec(row = 0, bold = TRUE, italic = FALSE, background = "rgba(174, 209, 200, 0.4)") %>%
+  kable_classic(html_font = "Times New Roman") %>% 
+  collapse_rows(columns = 1, valign = "middle") 
+
+#print the table
+combined_kable
+  
+```
+
+As shown in the table above, the proportions of [*Sabal etonia*]{style="color:#DCC27A;"} and [*Serenoa repens*]{style="color:#336886;"} remain stable across all partitions. This confirms that stratification was successful and minimizes bias in model training and evaluation. After confirming that all dataframes have the same relative proportions of species, we can begin to construct the classification models.
+
+# V. Model Development
+
+Now that we are ready to start building the models, we need to determine the approach best suited for this type of classification. SGiven our binary outcome variable (species classification), logistic regression is a natural modeling choice. It constrains predicted values to the [0, 1] interval, making it well-suited for estimating probabilities of categorical events. Using the logit function
+
+$$
+\text{logit(p)} = \text{log-odds} = \ln\left(\text{odds}\right)  = \ln\left(\frac{p}{1 - p}\right)
+$$
+
+$$
+\begin{aligned}
+\text{where:}\\\
+p & = \text{probability of the event occurring} \\
+1 - p & = \text{probability of the event not occurring} \\
+\frac{p}{1 - p} & = \text{odds of the event occurring} \\
+\ln\left(\frac{p}{1 - p}\right) & = \text{log-odds (logit) of the event occurring} 
+\end{aligned}
+$$
+
+as our link function to convert the probabilities into log-odds and map the predictions into probability space between \[0, 1\]. The logit function will linearize this nonlinear relationship, and we can use the log-odds to model the probability of an event occurring using a linear equation. To explore the impacts of several predictor variables, we will use the two formulas outlined below:
+
+## a) Model Formula {#formula}
+
+### A. Binary Logistic Regression Formula One
+
+$$
+\text{species} \sim \text{height} + \text{length} + \text{width} + \text{green leaves}
+$$
+
+### B. Binary Logistic Regression Formula Two
+
+$$
+\text{species} \sim \text{height} + \text{width} + \text{green leaves}
+$$
+
+## b) Model Optimization
+
+For each of these formulas, we evaluated the prediction ability of the binary logistic regression both without regularization (standard) and with regularization (elastic net). We will explore the framework of both models below:
+
+### 1. Standard Logistic Regression
+
+This first 
+
+$$
+\begin{aligned}
+\ln(\frac{p}{1 - p}) & = \beta_0 + \sum_{j=1}^{n} \beta_j x_j \\
+& = \beta_0 + \beta_1 x_1 + \beta_2 x_2 + \dots + \beta_n x_n
+\end{aligned}
+$$
+
+$$
+\begin{aligned}
+\text{where:}\\\
+x_j & = \text{predictor variable} \\
+\beta_0 & = \text{regression intercept} \\
+& = \text{log-odds of the event when all } x_j = 0 \\
+\beta_j & = \text{regression coefficient} \\
+& = \text{change in the log-odds for a one unit increase in } x_j
+\end{aligned}
+$$
+
+This regression predicts the probability of an event occurring by modeling the log-odds as a linear function of the inputted predictor variables. However, the standard binary logistic regression does not allow for regularization, which may make it more prone to overfitting. While our dataset has a relatively limited number of predictor variables (only considering height, canopy length, canopy width, and number of green leaves), it is still important to examine potential collinearity issues between these demographic characteristics. The coefficients $\beta_j$ quantify how each morphological trait contributes to the likelihood of classifying a palmetto as [*Serenoa repens*]{style="color:#336886;"}. Positive values increase this likelihood; negative values suggest an association with [*Sabal etonia*]{style="color:#DCC27A;"}.
+
+### 2. Elastic Net Logistic Regression
+
+Therefore, we will also explore an alternative model framework
+
+$$
+\ln\left(\frac{p}{1 - p}\right) = \beta_0 + \sum_{j=1}^{n} \beta_j x_j 
+- \lambda \left[ \alpha \sum |\beta_j| + (1 - \alpha) \sum \beta_j^2 \right]
+$$
+
+$$
+\begin{aligned}
+\text{where:}\\\
+\lambda & = \text{penalty strength} \\
+& = \text{controls regression coefficient shrinkage} \\
+\alpha & = \text{mixing parameter} \\
+&\quad - \text{if } \alpha = 1 \to \text{pure lasso} \\
+&\quad - \text{if } \alpha = 0 \to \text{pure ridge} \\
+&\quad - \text{if } 0 < \alpha < 1 \to \text{elastic net} \\
+\end{aligned}
+$$
+
+that builds on the standard regression to allow for regularization through the additional inclusion of penalty terms (L1 and L2). The first penalty term is the L1 Penalty (Lasso Regression)
+
+$$
+\lambda \sum |\beta_j| 
+$$
+
+which automates feature selection by forcing some regression coefficients to *exactly* zero to reduce overfitting by *removing* predictors. The second penalty, the L2 Penalty (Ridge Regression),
+
+$$
+\lambda \sum \beta_j^2 
+$$
+
+is useful for highly correlated predictors and *shrinks* the regression coefficients, but does *not* completely eliminate them from consideration. The elastic net model
+
+$$
+\lambda \left[ \alpha \sum |\beta_j| + (1 - \alpha) \sum \beta_j^2 \right]
+$$
+
+allows for a mixture of both L1 and L2 penalty terms. We will tune these hyperparmeters, the penalty strength (λ) and mixture composition (α), to address any potential collinearity.
+
+## c) Model Framework
+
+Now we can establish the framework for both the standard logistic regression and the elastic net logistic regression.
+
+### 1. Standard Logistic Regression
+
+We define the standard logistic regression model using the `logistic_reg()` function with the `"glm"` engine, which uses maximum likelihood estimation.
+
+```{r}
+#| code-fold: false
+
+#construct a standard logistic regression model
+standard_model <- logistic_reg() %>% 
+  set_engine("glm") #use a generalized linear model to fit the regression
+
+```
+
+Similar to the chunk above, we will outline a logistic regression model, but here we will allow for regularization and hyperparameter tuning.
+
+### 2. Elastic Net Logistic Regression
+
+The elastic net model allows us to tune both the penalty strength and the balance between L1 and L2 regularization. By setting both `penalty` and `mixture` to `tune()`, we can optimize these hyperparameters through cross-validation.
+
+```{r}
+#| code-fold: false
+
+#construct an elastic net logistic regression model
+elastic_model <- logistic_reg(penalty = tune(), #allow hyperparameter tuning
+                              mixture = tune()) %>% #determine optimal mixture between lasso and ridge
+  set_engine("glmnet") 
+
+```
+
+## d) Hyperparameter Optimization
+
+Constructing the elastic net logistic regression requires additional preprocessing steps to determine the optimal penalty (λ) and mixture (α) values to be used when we regularize the model.
+
+### i) Potential Hyperparameter Values {#elastic_grid}
+
+First, we define a tuning grid of 100 (10×10) combinations of penalty strength and mixing parameter. This grid will be used during cross-validation to identify the combination that yields the best classification performance.
+
+```{r}
+#| code-fold: false
+
+#define a grid of penalty (λ) and mixture (α) values
+elastic_grid <- grid_regular(penalty(range = c(0.0001, 1)),  #regularization strength
+                             mixture(range = c(0, 1)), #0 = pure ridge, 1 = pure lasso
+                             levels = 10) #number of levels to explore
+
+```
+
+### ii) Ten Fold Cross Validation {#ten_cv}
+
+Here we will create ten folds to use in our hyperparameter tuning. To minimize overfitting, we will perform a ten fold cross validation to assess how well the model generalizes across different subsets of the data.
+
+```{r}
+#| code-fold: false
+
+#create cross-validation folds for hyperparameter tuning
+cv_folds <- vfold_cv(palmetto_train, 
+                     v = 10, #use 10 folds 
+                     strata = species)
+
+```
+
+# VI. Model Construction
+
+With the formulas defined, we now implement logistic regression using the `tidymodels` framework. This involves creating a "recipe" that specifies preprocessing steps and a "workflow" that combines the model with its recipe for training and evaluation.
+
+## a) Model Recipe {#recipes}
+
+### 1. Standard Logistic Regression
+
+We define two recipes for the standard logistic regression models. These recipes specify the outcome `(name)` and the predictor variables. No additional preprocessing is needed because the `"glm"` engine handles raw numeric data.
+
+#### A1: Standard Model One
+
+```{r}
+#| code-fold: false
+
+#define the recipe for the standard model one
+standard_recipe1 <- recipe(name ~ height + length + width + green_lvs,
+                           data = palmetto_train)
+```
+
+#### B1: Standard Model Two
+
+```{r}
+#| code-fold: false
+
+#define the recipe for the standard model
+standard_recipe2 <- recipe(name ~ height + width + green_lvs,
+                           data = palmetto_train)
+
+```
+
+### 2. Elastic Net Logistic Regression
+
+Elastic net regression is sensitive to scale, so numeric predictors must be normalized. Additionally, variables with zero variance provide no predictive value and are removed. These preprocessing steps are defined in the `recipe()` and applied before tuning.
+
+#### A2: Elastic Net Model One
+
+```{r}
+#| code-fold: false
+
+#define the recipe for the elastic model
+elastic_recipe1 <- recipe(name ~ height + length + width + green_lvs,
+                          data = palmetto_train) %>%
+  step_zv(all_numeric(), 
+          -all_outcomes()) %>% #eliminate predictors that have zero variance
+  step_naomit(all_numeric()) %>%  #remove rows with missing numeric values
+  step_normalize(all_numeric(), 
+                 -all_outcomes()) #normalizes numerical variables to have mean = 0 and standard deviation = 1
+
+```
+
+#### B2: Elastic Net Model Two
+
+```{r}
+#| code-fold: false
+
+#define the recipe for the elastic model
+elastic_recipe2 <- recipe(name ~ height + width + green_lvs,
+                          data = palmetto_train) %>%
+  step_zv(all_numeric(), 
+          -all_outcomes()) %>% #eliminate predictors that have zero variance
+  step_naomit(all_numeric()) %>%  #remove rows with missing numeric values
+  step_normalize(all_numeric(), 
+                 -all_outcomes()) #normalizes numerical variables to have mean = 0 and standard deviation = 1
+
+```
+
+## b) Model Workflow
+
+We create workflows that bundle the [model structure](#formula) and [preprocessing steps](#recipes) into a single object. This modular setup allows easy training, prediction, and cross-validation.
+
+### 1. Standard Logistic Regression
+
+#### A1: Standard Model One
+
+```{r}
+#| code-fold: false
+
+#create a workflow to bundle the recipe (data transformation) and the model
+standard_wf1 <- workflow() %>%
+  add_recipe(standard_recipe1) %>% 
+  add_model(standard_model) 
+
+```
+
+#### B1: Standard Model Two
+
+```{r}
+#| code-fold: false
+
+#create a workflow to bundle the recipe (data transformation) and the model
+standard_wf2 <- workflow() %>%
+  add_recipe(standard_recipe2) %>% 
+  add_model(standard_model) 
+
+```
+
+### 2. Elastic Net Logistic Regression
+
+The elastic net workflows pair our preprocessing pipelines with the regularized logistic regression model. Because we defined both `penalty` and `mixture` as tuning parameters, these workflows are ready for grid search cross-validation.
+
+#### A2: Elastic Net Model One
+
+```{r}
+#| code-fold: false
+
+#create a workflow to bundle the recipe (data transformation) and the model
+elastic_wf1 <- workflow() %>%
+  add_recipe(elastic_recipe1) %>% 
+  add_model(elastic_model) 
+
+```
+
+#### B2: Elastic Net Model Two
+
+```{r}
+#| code-fold: false
+
+#create a workflow to bundle the recipe (data transformation) and the model
+elastic_wf2 <- workflow() %>%
+  add_recipe(elastic_recipe2) %>% 
+  add_model(elastic_model) 
+
+```
+
+## c) Hyperparameter Optimization
+
+Before continuing, we need to determine the optimal values for the penalty (λ) and mixture (α) terms in our elastic net regression.
+
+### i) Tune Hyperparameters
+We use ten-fold cross-validation to evaluate combinations of `penalty` and `mixture` values. The elastic net is sensitive to the strength and balance of regularization. The `tune_grid()` function evaluates each parameter combination and returns performance metrics for each fold. We focus on both ROC AUC and accuracy as evaluation criteria. We begin this process by using a [ten fold cross validation](#ten_cv) to resample across the [grid of hyperparameter values](#elastic_grid) generated above.
+
+#### A2: Elastic Net Model One
+
+```{r}
+#| code-fold: false
+
+#tune the model using cross-validation
+elastic_tune_results1 <- elastic_wf1 %>%
+  tune_grid(resamples = cv_folds,
+            grid = elastic_grid,
+            metrics = metric_set(roc_auc, accuracy))  #evaluation metrics
+
+```
+
+#### B2: Elastic Net Model Two
+
+```{r}
+#| code-fold: false
+
+#tune the model using cross-validation
+elastic_tune_results2 <- elastic_wf2 %>%
+  tune_grid(resamples = cv_folds,
+            grid = elastic_grid,
+            metrics = metric_set(roc_auc, accuracy))  #evaluation metrics
+
+```
+
+### ii) Select Optimal Values
+
+The optimal parameter set is selected based on the maximum ROC AUC. This prioritizes the model's ability to distinguish between the two species classes. The selected values of λ and α are then passed into the finalized model workflow.
+
+#### A2: Elastic Net Model One
+
+```{r}
+#| code-fold: false
+
+#select the best penalty and mixture values based on AUC
+best_params1 <- elastic_tune_results1 %>%
+  select_best(metric = "roc_auc")
+
+#print the results
+best_params1 %>% 
+  rename(Penalty = penalty,
+         Mixture = mixture) %>% 
+  select(-.config)
+
+```
+
+#### B2: Elastic Net Model Two
+
+```{r}
+#| code-fold: false
+
+#select the best penalty and mixture values based on AUC
+best_params2 <- elastic_tune_results2 %>%
+  select_best(metric = "roc_auc")
+
+#print the results
+best_params2  %>% 
+  rename(Penalty = penalty,
+         Mixture = mixture) %>% 
+  select(-.config)
+
+```
+
+
+### iii) Finalize Model Workflow
+
+After identifying these optimal hyperparameter values, we can finalize the model workflow for the elastic net regressions. We finalize each workflow by incorporating the optimal penalty and mixture values. This ensures the model is trained using the best-found regularization configuration.
+
+#### A2: Elastic Net Model One
+
+```{r}
+#| code-fold: false
+
+#finalize workflow using the best hyperparameters
+final_elastic_wf1 <- elastic_wf1 %>%
+  finalize_workflow(best_params1)
+
+```
+
+#### B2: Elastic Net Model Two
+
+```{r}
+#| code-fold: false
+
+#finalize workflow using the best hyperparameters
+final_elastic_wf2 <- elastic_wf2 %>%
+  finalize_workflow(best_params2)
+
+```
+
+# VII. Model Predictions
+
+With each model finalized and optimized, we now fit them to the training data and evaluate their performance on the unseen testing set. This allows us to assess how well each approach generalizes to new data and compare the predictive power of the full and reduced formulas across both standard and regularized models.
+
+## a) Model Training
+
+
+### 1. Standard Logistic Regression
+
+We begin by training the standard logistic regression models using the training data. 
+
+#### A1: Standard Model One
+
+This model includes all four predictor variables (height, length, width, and green leaves) and uses maximum likelihood estimation with no regularization.
+
+```{r}
+#| code-fold: false
+
+#fit the standard logistic regression model
+standard_fit1 <- standard_wf1 %>%
+  fit(palmetto_train) #fit the model with the training data
+
+```
+
+#### B1: Standard Model Two
+
+The second standard logistic regression model is fit using a reduced set of predictors, excluding canopy length. This allows us to evaluate whether a simpler model can achieve comparable classification performance.
+
+
+```{r}
+#| code-fold: false
+
+#fit the standard logistic regression model
+standard_fit2 <- standard_wf2 %>%
+  fit(palmetto_train) #fit the model with the training data
+
+```
+
+### 2. Elastic Net Logistic Regression
+
+#### A2: Elastic Net Model One
+
+We now train the full elastic net logistic regression model using the previously selected optimal penalty and mixture values. This model includes all predictors but applies regularization to reduce overfitting and handle any multicollinearity between features.
+
+```{r}
+#| code-fold: false
+
+#fit the finalized model on the full training dataset
+elastic_fit1 <- final_elastic_wf1 %>%
+  fit(palmetto_train)
+
+```
+
+#### B2: Elastic Net Model Two
+
+The final model is an elastic net version of the reduced predictor set. By combining simplicity (fewer variables) and regularization, this model may offer strong generalization with improved interpretability.
+
+
+```{r}
+#| code-fold: false
+
+#fit the finalized model on the full training dataset
+elastic_fit2 <- final_elastic_wf2 %>%
+  fit(palmetto_train)
+
+```
+
+
+The models are now trained on the 80% training data. Standard models are fit using maximum likelihood, while elastic net models use the optimal penalty and mixture values previously determined through tuning.
+
+## b) Model Testing
+
+Both the predicted class label and associated class probabilities are retained for evaluation. These outputs are used to calculate accuracy, visualize probability distributions, and construct confusion matrices.
+
+### 1. Standard Logistic Regression
+
+#### A1: Standard Model One
+
+The full standard model is used to predict class labels and class probabilities for each plant in the test set. These predictions will later be used to construct a confusion matrix and compute metrics like accuracy, precision, and ROC AUC.
+
+```{r}
+#| code-fold: false
+
+#make predictions
+standard_predict1 <- palmetto_test %>% 
+  bind_cols(predict(standard_fit1, new_data = palmetto_test) %>% 
+              rename(prediction = .pred_class),
+            predict(standard_fit1, new_data = palmetto_test, type = "prob") %>% 
+              rename(etonia_prob = ends_with("etonia")) %>% 
+              rename(repens_prob = ends_with("repens"))) 
+
+```
+
+#### B1: Standard Model Two
+
+This reduced version of the standard logistic regression model generates both predicted class labels and species probabilities using the smaller set of predictors. These predictions allow us to assess whether excluding canopy length affects the model’s ability to distinguish between species.
+
+```{r}
+#| code-fold: false
+
+#make predictions
+standard_predict2 <- palmetto_test %>% 
+  bind_cols(predict(standard_fit2, new_data = palmetto_test) %>% 
+              rename(prediction = .pred_class),
+            predict(standard_fit2, new_data = palmetto_test, type = "prob") %>% 
+              rename(etonia_prob = ends_with("etonia")) %>% 
+              rename(repens_prob = ends_with("repens"))) 
+```
+
+### 2. Elastic Net Logistic Regression
+
+#### A2: Elastic Net Model One
+
+The full elastic net model predictions are now generated for the test dataset. This model includes all four predictors and applies a combination of L1 and L2 regularization. The predicted probabilities are especially useful for comparing model confidence and calibration relative to the standard logistic model.
+
+```{r}
+#| code-fold: false
+
+#make predictions
+elastic_predict1 <- palmetto_test %>% 
+  bind_cols(predict(elastic_fit1, new_data = palmetto_test) %>% 
+              rename(prediction = .pred_class),
+            predict(elastic_fit1, new_data = palmetto_test, type = "prob") %>% 
+              rename(etonia_prob = ends_with("etonia")) %>% 
+              rename(repens_prob = ends_with("repens"))) 
+
+```
+
+#### B2: Elastic Net Model Two
+
+Finally, the reduced elastic net model is used to predict class labels and probabilities. This model uses fewer variables and applies regularization, making it potentially more generalizable and interpretable. The test set predictions will be used to directly compare all four models in terms of classification accuracy and probability confidence.
+
+```{r}
+#| code-fold: false
+
+#make predictions
+elastic_predict2 <- palmetto_test %>% 
+  bind_cols(predict(elastic_fit2, new_data = palmetto_test) %>% 
+              rename(prediction = .pred_class),
+            predict(elastic_fit2, new_data = palmetto_test, type = "prob") %>% 
+              rename(etonia_prob = ends_with("etonia")) %>% 
+              rename(repens_prob = ends_with("repens"))) 
+
+```
+
+At this stage, all four logistic regression models have been trained on the full training dataset and used to generate predictions on the reamining test dataset. Each model produces both a predicted class label and a predicted probability for each species, enabling us to compare not only their overall classification accuracy, but also their confidence and calibration. In the next section, we use these predictions to construct confusion matrices and calculate classification metrics that will help us understand how each model performs — both overall and in distinguishing between [*Sabal etonia*]{style="color:#DCC27A;"} and [*Serenoa repens*]{style="color:#336886;"}. These results will inform which model offers the most reliable and interpretable classification tool for this dataset.
+
+# VIII. Model Performance Evaluation
+
+Finally, we can begin to evaluate and compare the prediction performance of each model. Since we have two options for classification (either [*Sabal etonia*]{style="color:#DCC27A;"} or [*Serenoa repens*]{style="color:#336886;"}), we can identify [*Sabal etonia*]{style="color:#DCC27A;"} as the **positive** class and [*Serenoa repens*]{style="color:#336886;"} as the **negative** class. Therefore when we refer to a **positive** classification, this means that we are talking about [*Sabal etonia*]{style="color:#DCC27A;"} and we will refer to the [*Serenoa repens*]{style="color:#336886;"} as a **negative** classification. Using this terminology, we can categorize the outcomes into four possibilities:
+
+1.  True Positive (TP):
+    -   the model **correctly predicts** a **positive** class when the actual class is positive
+    -   ex) the model correctly predicts the species to be [*Sabal etonia*]{style="color:#DCC27A;"} and the actual species is [*Sabal etonia*]{style="color:#DCC27A;"}
+2.  True Negative (TN):
+    -   the model **correctly predicts** a **negative** class when the actual class is negative
+    -   ex) the model incorrectly predicts the species to be [*Serenoa repens*]{style="color:#336886;"} when the actual species is [*Serenoa repens*]{style="color:#336886;"}
+3.  False Positive (FP) - **Type One Error**:
+    -   the model **incorrectly predicts** a **positive** class when the actual class is negative
+    -   ex) the model incorrectly predicts the species to be [*Sabal etonia*]{style="color:#DCC27A;"} when the actual species is [*Serenoa repens*]{style="color:#336886;"}
+4.  False Negative (FN) - **Type Two Error**:
+    -   the model **incorrectly predicts** a **negative** class when the actual class is positive
+    -   ex) the model incorrectly predicts the species to be [*Serenoa repens*]{style="color:#336886;"} when the actual species is [*Sabal etonia*]{style="color:#DCC27A;"}
+
+## a) Repeated Cross Validation
+
+We will start by calculating a variety of metrics, including accuracy, precision, sensitivity, specificity, and ROC AUC (Receiver Operating Characteristic Area Under the Curve), for each model. These capture not just overall accuracy but also class-specific performance, which is particularly important for detecting imbalances or biases between species. These metrics are briefly summarized below:
+
+1.  Accuracy:
+    -   useful to evaluate overall model performance
+
+    -   overall percentage of correct predictions
+
+    -   good metric for balanced datasets
+
+$$
+Accuracy = (\frac{TP + FP}{\text{total predictions}}) 
+$$
+
+2.  Precision:
+    -   a measure of how many **predicted positives** were actually positive
+
+    -   helps determine that the model is **not biased** towards one class (species) over another
+
+$$
+Precision = (\frac{TP}{TP + FP}) 
+$$
+
+3.  Sensitivity (Recall):
+    -   a measure of how many **actual positives** were correctly predicted
+
+$$
+Sensitivity = (\frac{TP}{TP + FN}) 
+$$
+
+4.  Specificity:
+    -   a measure of how many **actual negatives** were correctly predicted
+
+$$
+Specificity = (\frac{TN}{TN + FP}) 
+$$
+
+5.  ROC AUC:
+    -   area under the receiver operator curve
+
+    -   a measure of overall classification performance
+
+    -   useful metric for cross-model comparisons
+
+$$
+\begin{aligned}
+AUC &= 1.0 \to \text{perfect classifier} \\
+AUC &> 0.8 \to \text{strong classificer} \\
+AUC &\sim 0.5 \to \text{random guessing}
+\end{aligned}
+$$
+Among these, ROC AUC (Receiver Operating Characteristic Area Under the Curve) is particularly valuable. It evaluates a model’s ability to distinguish between the two classes across all possible classification thresholds, rather than being dependent on a fixed 0.5 cutoff. AUC balances the true positive rate and false positive rate, making it a robust and threshold-independent metric. For this reason, we prioritize ROC AUC when selecting the best hyperparameters for elastic net models.
+
+To evaluate the generalization ability of each model, we apply repeated ten-fold cross-validation. This approach divides the training dataset into ten subsets, fits the model on nine, and validates on the remaining one — repeating this process ten times to reduce variability in performance estimates. By calculating the average of multiple classification metrics across all resamples, we obtain robust summaries of model performance for comparison.
+
+```{r}
+#perform a 10-fold cross validation to use to fit the model across ten different training/testing data splits
+folds <- vfold_cv(palmetto_train,  
+                  v = 10, 
+                  repeats = 10,
+                  strata = name) 
+```
+
+
+This next group fits and evaluates all four models using `fit_resamples()`.
+
+### 1. Model One
+
+#### A1: Standard Model One
+
+The full standard logistic regression model is evaluated across all cross-validation splits. We collect multiple classification metrics (including accuracy, sensitivity, specificity, precision, and ROC AUC) to build a comprehensive understanding of model behavior.
+
+```{r}
+#| code-fold: false
+
+#fit the model using the 10 fold cross validation 
+standard_folds1 <- standard_fit1 %>% 
+  fit_resamples(resamples = folds,
+                metrics = metric_set(accuracy, precision, sensitivity, specificity, roc_auc),
+                control = control_resamples(save_pred = TRUE)) 
+
+#collect the metrics from the cross fold validation
+standard_cv1 <- standard_folds1 %>% 
+  collect_metrics()
+
+```
+
+#### B1: Elastic Net Model One
+
+This code fits the full elastic net model across all resampling folds. Since this model includes regularization, we are interested to see whether performance improves or stabilizes relative to the unpenalized standard model.
+
+
+```{r}
+#| code-fold: false
+
+#fit the model using the 10 fold cross validation 
+elastic_folds1 <- elastic_fit1 %>% 
+  fit_resamples(resamples = folds,
+                metrics = metric_set(accuracy, precision, sensitivity, specificity, roc_auc),
+                control = control_resamples(save_pred = TRUE))
+
+#collect the metrics from the cross fold validation
+elastic_cv1 <- elastic_folds1 %>% 
+  collect_metrics()
+
+```
+
+### 2. Model Two
+
+#### A2: Standard Model Two
+
+The reduced standard logistic regression model removes canopy length as a predictor. This model may offer improved interpretability with minimal loss in performance, especially if the excluded variable contributes little predictive power.
+
+```{r}
+#| code-fold: false
+
+#fit the model using the 10 fold cross validation 
+standard_folds2 <- standard_fit2 %>% 
+  fit_resamples(resamples = folds,
+                metrics = metric_set(accuracy, precision, sensitivity, specificity, roc_auc),
+                control = control_resamples(save_pred = TRUE)) 
+
+#collect the metrics from the cross fold validation
+standard_cv2 <- standard_folds2 %>% 
+  collect_metrics()
+
+```
+
+#### B2: Elastic Net Model Two
+
+The final model — a reduced elastic net logistic regression — combines regularization with a simpler predictor set. This model may generalize better by reducing overfitting, especially if there is multicollinearity in the full model. 
+
+```{r}
+#| code-fold: false
+
+#fit the model using the 10 fold cross validation 
+elastic_folds2 <- elastic_fit2 %>% 
+  fit_resamples(resamples = folds,
+                metrics = metric_set(accuracy, precision, sensitivity, specificity, roc_auc),
+                control = control_resamples(save_pred = TRUE))
+
+#collect the metrics from the cross fold validation
+elastic_cv2 <- elastic_folds2 %>% 
+  collect_metrics()
+
+```
+
+## b) Compare Mean Model Performance Metrics
+
+Now that we have fitted each model to ten different data splits and calculated the metrics for each fold, we can calculate the mean value for each metric and compare the metrics across all models.
+
+### i) Calculate Mean Metrics
+
+We now summarize the average performance metrics across all cross-validation folds for each of the four models. These metrics are rounded to two decimal places and scaled to percentages for readability. This step makes it easier to compare models side-by-side using the same evaluation criteria.
+
+```{r}
+#standard regression model one
+standard_metrics_mean1 <- standard_cv1 %>% 
+  rename(Metric = .metric,
+         Standard1 = mean) %>% 
+  select(Metric, Standard1) %>% 
+  mutate(across(where(is.numeric), ~ round(. * 100, 2)))
+
+#standard regression model two
+standard_metrics_mean2 <- standard_cv2 %>% 
+  rename(Metric = .metric,
+         Standard2 = mean) %>% 
+  select(Metric, Standard2) %>% 
+  mutate(across(where(is.numeric), ~ round(. * 100, 2)))
+
+#elastic net model one
+elastic_metrics_mean1 <- elastic_cv1 %>% 
+  rename(Metric = .metric,
+         Elastic1 = mean) %>% 
+  select(Metric, Elastic1) %>% 
+  mutate(across(where(is.numeric), ~ round(. * 100, 2)))
+
+#elastic net model two
+elastic_metrics_mean2 <- elastic_cv2 %>% 
+  rename(Metric = .metric,
+         Elastic2 = mean) %>% 
+  select(Metric, Elastic2) %>% 
+  mutate(across(where(is.numeric), ~ round(. * 100, 2)))
+
+```
+
+### ii) Compare Model Metrics
+
+After calculating average performance for each model, we combine all metrics into one comparison table. We then identify the highest-performing model for each metric and display it in the “Recommendation” column. This allows us to quickly assess which model consistently outperforms others across evaluation criteria.
+
+```{r}
+#combine the tables and compare the metrics
+combined_metrics <- standard_metrics_mean1 %>%
+  left_join(standard_metrics_mean2 %>% select(Metric, Standard2), by = "Metric") %>% 
+  left_join(elastic_metrics_mean1 %>% select(Metric, Elastic1), by = "Metric") %>%
+  left_join(elastic_metrics_mean2 %>% select(Metric, Elastic2), by = "Metric") %>% 
+  pivot_longer(cols = c("Standard1", "Standard2", "Elastic1", "Elastic2"),
+               names_to = "Model",
+               values_to = "Prediction") %>%   
+  group_by(Metric) %>%
+  mutate(Recommendation = ifelse(Prediction == max(Prediction, na.rm = TRUE), Model, NA)) %>%
+  mutate(Recommendation = first(na.omit(Recommendation))) %>%
+  ungroup() %>% 
+  pivot_wider(names_from = "Model",
+              values_from = "Prediction") %>% 
+  relocate(Recommendation, .after = "Elastic2")
+
+#create a kable from the results 
+combined_metrics_kable <- kable(combined_metrics,
+                                col.names = c("Metric", "Standard One", "Standard Two", "Elastic One", "Elastic Two", "Recommendation"),
+                                kable_title = htmltools::tags$div(style = "text-align: center; font-size: 20px;", htmltools::tags$strong("Comparison of Model Performance Metrics")),
+                          escape = FALSE) %>%
+    kable_styling(full_width = FALSE, font_size = "0.8rem", position = "center") %>%
+    row_spec(row = 0, bold = TRUE, background = "rgba(174, 209, 200, 0.4)") %>%
+    kable_classic(html_font = "Times New Roman")
+
+#print the table
+combined_metrics_kable
+
+```
+
+Based on the results of our evaluation, it appears that the best model is **Standard1** (A1: Standard Logistic Model One). This model performed the best across the majority (4/5) of the selected metrics including accuracy, precision, ROC AUC, and specificity. It was only outperformed by the two elastic net models in regards to sensitivity. This means that the elastic net logistic regressions are better at correctly identifying *Serenao repens* than the standard logistic regressions. But overall, it appears that the inclusion of **canopy length** is an important metric for distinguishing between species. Therefore, we will continue our evaluation with only model A1 and A2 since they include this variable. Overall, the results support the conclusion that a standard logistic regression model using all four predictor variables provides the best balance of accuracy and interpretability for this dataset.
+
+# IX. Model Selection
+
+Given the consistent performance of the full-model formulations in earlier evaluations, we now focus our attention on A1 and A2 - the standard and elastic net logistic regression models that use all available predictors. This section compares these two models in more detail, with an emphasis on predicted probabilities and visual interpretation.
+
+$$
+\text{species} \sim \text{height} + \text{length} + \text{width} + \text{green leaves}
+$$
+
+## a) Finalize Models
+
+To finalize the selected models, we use the full training-test split `(palmetto_split)` and apply the `last_fit()` function. This trains each model on the training data and evaluates it on the held-out test set - producing performance estimates and predictions that can now be analyzed further.
+
+### A1: Standard Model One
+
+```{r}
+#train the model on all the data
+final_standard1 <- standard_wf1 %>% 
+  last_fit(palmetto_split) 
+
+```
+
+### B1: Elastic Net Model One
+
+```{r}
+#train the model on all the data
+final_elastic1 <- final_elastic_wf1 %>% 
+  last_fit(palmetto_split) 
+
+```
+
+
+## b) Prediction Probability Distributions
+
+Now we need to determine which of the two remaining models (A1 or B1) is a better classifier. We can start by visualizing the probability distribution of the predictions for both models and compare their ability to classify one species over another. This helps us understand how each model behaves in terms of prediction confidence and helps us assess calibration: are the models confident and well-separated in their predictions, or are they uncertain and overlapping?
+
+### i) Extract Prediction Probabilities
+
+For each model, we collect the predicted probabilities from the final fit. We restructure the data so that each row represents one probability (for either [*Sabal etonia*]{style="color:#DCC27A;"} or [*Serenoa repens*]{style="color:#336886;"}) for a given observation. This format allows us to facet the distributions by species and model method in the next step.
+
+#### A1: Standard Model One
+
+```{r}
+#extract predictions with probabilities
+standard_preds <- final_standard1 %>%
+  collect_predictions() %>%  
+  clean_names() %>% 
+  rename(prediction = pred_class,
+         etonia_prob = pred_sabal_etonia,
+         repens_prob = pred_serenoa_repens,
+         actual = name) %>% 
+  pivot_longer(cols = c(etonia_prob, repens_prob),
+               names_to = "species_prob",
+               values_to = "probability") %>% 
+  mutate(method = "standard") %>% 
+  select(method, actual, prediction, species_prob, probability)
+
+```
+
+#### B1: Elastic Net Model One
+
+```{r}
+#extract predictions with probabilities
+elastic_preds <- final_elastic1 %>%
+  collect_predictions() %>% 
+  clean_names() %>% 
+  rename(prediction = pred_class,
+         etonia_prob = pred_sabal_etonia,
+         repens_prob = pred_serenoa_repens,
+         actual = name) %>% 
+  pivot_longer(cols = c(etonia_prob, repens_prob),
+               names_to = "species_prob",
+               values_to = "probability") %>% 
+  mutate(method = "elastic_net") %>% 
+  select(method, actual, prediction, species_prob, probability)
+
+```
+
+
+### ii) Species-Specific Summary
+
+Then we can finish preparing the data for visualization:
+
+```{r}
+#create a table with the combined prediction probabilities
+combined_preds <- bind_rows(standard_preds, elastic_preds) 
+
+#define facet labels manually as a named vector
+species_labels <- c("etonia_prob" = "<i>Sabal etonia</i> Probability",
+                    "repens_prob" = "<i>Serenoa repens</i> Probability")
+
+```
+
+
+### iii) Visualize Probability Distributions
+
+Finally, we can plot the probability distributions of model predicitions for both species of Palmetto. In this plot, the color is used to identify the true species with the **TRUE** [***Sabal etonia***]{style="color:#DCC27A;"} in [yellow]{style="color:#DCC27A;"} and the **TRUE** [**Serenoa repens**]{style="color:#336886;"} in [blue]{style="color:#336886;"}. 
+
+
+1.  [***Sabal etonia***]{style="color:#DCC27A;"}
+2.  [***Serenoa repens***]{style="color:#336886;"}
+
+The plot below visualizes the predicted probability distributions for each species across the two top models. A well-performing classifier should produce a **bimodal** or **polarized** distribution, with most probabilities clustered near 0 or 1, indicating confident predictions.
+
+```{r}
+#plot the probability distributions
+probability_plot <- ggplot(combined_preds, aes(x = probability, fill = actual)) + 
+  geom_density(alpha = 0.6, linewidth = 0.5) + 
+  scale_y_continuous(position = "right") +
+  facet_grid(method ~ species_prob, 
+             scales = "fixed", 
+             space = "fixed", 
+             switch = "y",
+             labeller = labeller(species_prob = species_labels,
+                                 method = c("elastic_net" = "Elastic Net",
+                                            "standard" = "Standard"))) +
+  scale_fill_manual(values = species_colors,
+                    labels = c("Sabal etonia", "Serenoa repens")) +
+  labs(title = "Probability Distributions for Predictions",
+       subtitle = "Model One",
+       x = "Predicted Probability",
+       y = "Density",
+       fill = "True Species") +
+  theme(plot.title = element_text(family = "Times New Roman",
+                                  size = 16,
+                                  hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(family = "Times New Roman",
+                                    size = 12,
+                                    hjust = 0.5),
+        axis.title = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 13),
+        axis.text = element_text(family = "Times New Roman", 
+                                 size = 10),
+        strip.text = element_markdown(family = "Times New Roman",
+                                      face = "bold",
+                                      size = 11),
+        legend.position = "bottom",
+        legend.title = element_text(family = "Times New Roman",
+                                    face = "bold",
+                                    size = 10),
+        legend.text = element_text(family = "Times New Roman",
+                                   size = 10,
+                                   face = "italic"),
+        legend.box.background = element_rect(color = "black", size = 1))
+
+#print the plot
+probability_plot
+
+```
+
+This visualization compares the predicted probability distributions for each species under the two top-performing models. Each row represents a model (Standard or Elastic Net), and each column represents the predicted probability for a given species ([*Sabal etonia*]{style="color:#DCC27A;"} on the left, [*Serenoa repens*]{style="color:#336886;"} on the right). The colors indicate the true species identity, with [**gold**]{style="color:#DCC27A;"} for *Sabal etonia* and [**blue**]{style="color:#336886;"} for *Serenoa repens*.
+
+In the tandard logistic regression model (bottom row), we observe highly **polarized** distributions: the model confidently assigns probabilities near 0 or 1, showing that it makes predictions with **strong** conviction. The clear separation between species suggests that the model distinguishes the two groups well.
+
+In contrast, the elastic net model (top row) produces tighter, **unimodal** distributions centered around moderate probability values (~0.45–0.65). This indicates that the model is more conservative and **less confident** in its predictions. This reduced confidence is likely a result of the regularization effect, which shrinks coefficients and reduces extreme outputs. Importantly, the overlap between species is more pronounced, which could contribute to slightly lower classification metrics for this model.
+
+Overall, while both models distinguish between species, the standard model makes more decisive predictions, whereas the elastic net model favors moderation and smoothness. This reflects a fundamental trade-off between model certainty and model robustness.
+
+## c) Parameterized Equations
+
+After training the model on the entire dataset, we can extract the final values (the regression coefficient - β) and construct the final parameterized equations for these two models (A1 and B1).
+
+### A1: Standard Model One
+
+For the standard logistic regression model, we extract the fitted parameters and convert the log-odds coefficients into interpretable quantities: odds and probabilities. Odds reflect how the odds of classification shift with each unit increase in the predictor, while the corresponding probability gives a sense of how likely classification into a given species becomes. We round each value for clarity and drop the intercept for ease of interpretation.
+
+#### i) Extract Model Parameters
+
+```{r}
+#extract the fitted parameters 
+standard_parms1 <- final_standard1 %>% 
+  extract_fit_parsnip() 
+
+#tidy up the dataframe with the parameters 
+standard_parms_clean <- standard_parms1 %>% 
+  tidy() %>% 
+  mutate(odds = exp(estimate), #convert the log-odds to odds
+         prob = odds/(1 + odds)) %>%  #convert the odds to probabilities
+  mutate(estimate = signif(estimate, 2),  #keep 2 significant digits
+         std_error = scales::scientific(std.error, 3),
+         statistic = signif(statistic, 4),
+         p_value = scales::scientific(p.value, 3),
+         odds = signif(odds, 3),
+         prob = signif(prob, 4)) %>% 
+  filter(term != "(Intercept)") %>% 
+  select(term, estimate, std_error, statistic, p_value, odds, prob)
+
+#create a kable 
+standard_parms_kable <- kable(standard_parms_clean,
+                              col.names = c("Term", "Coeffecient (β)", "Standard Erorr (SE)", "Statistic", "p-value", "Odds", "Probability"),
+                              kable_title = htmltools::tags$div(style = "text-align: center; font-size: 20px;", htmltools::tags$strong("A1: Standard Logistic Regression Model One")),
+                              escape = FALSE) %>%
+  kable_styling(full_width = FALSE, font_size = "0.8rem", position = "center") %>%
+  row_spec(row = 0, bold = TRUE, background = "rgba(174, 209, 200, 0.4)") %>%
+  row_spec(row = 0:4, align = "center") %>% 
+  kable_classic(html_font = "Times New Roman") 
+
+#print the table
+standard_parms_kable
+
+```
+
+#### ii) Print Final Equation
+
+Below is the parameterized equation for the standard logistic regression model. This equation represents the log-odds of classifying a plant as [*Serenoa repens*]{style="color:#336886;"} as a function of the four predictor variables. The magnitude and sign of each coefficient indicate the direction and strength of each variable’s contribution to species classification.
+
+
+```{r}
+#extract the model (engine) from the final workflow 
+standard_eq <- standard_parms1 %>% 
+  extract_fit_engine()
+
+#print the parameterized equation from elastic net model one
+extract_eq(standard_eq, use_coefs = TRUE, wrap = TRUE)
+
+```
+
+### B1: Elastic Net Model One
+
+For the elastic net model, we extract the coefficients associated with the best-performing penalty value identified during tuning. Like before, we convert these to odds and probabilities for interpretability. Regularization can shrink coefficients toward zero, so variables with minimal influence are likely excluded in this process.
+
+#### i) Extract Model Parameters
+
+To better understand the internal workings of the elastic net model, we extract and interpret the fitted coefficients corresponding to the best-performing penalty value identified during hyperparameter tuning. Like in the standard logistic regression case, we transform each log-odds coefficient into interpretable odds and probabilities, helping us understand how each predictor influences classification.
+
+Because elastic net applies both **L1 (lasso)** and **L2 (ridge)** regularization, this model has the unique ability to shrink unimportant coefficients toward zero while retaining others which can potentially resulting in a more parsimonious model.
+
+```{r}
+#extract the workflow from the final fitted model 
+elastic_wk_final <- final_elastic1 %>% 
+  extract_workflow()
+
+#extract the fitted parameters 
+elastic_parms1 <- elastic_wk_final %>% 
+  extract_fit_parsnip() 
+
+#extract coefficients and filter for the best penalty
+elastic_params_clean <- elastic_parms1 %>%
+  tidy() %>%
+  filter(penalty == best_params1$penalty) %>%  #keep only best penalty coefficients
+  mutate(odds = exp(estimate),  #convert the log-odds to odds
+         prob = odds / (1 + odds)) %>%  #convert the odds to probabilities
+  mutate(estimate = signif(estimate, 2),  #keep 2 significant digits
+         odds = signif(odds, 3),
+         prob = signif(prob, 4)) %>% 
+  filter(term != "(Intercept)") %>% 
+  select(term, estimate, penalty, odds, prob)
+
+#create a kable 
+elastic_parms_kable <- kable(elastic_params_clean,
+                             col.names = c("Term", "Coeffecient (β)", "Penalty", "Odds", "Probability"),
+                              kable_title = htmltools::tags$div(style = "text-align: center; font-size: 20px;", htmltools::tags$strong("A2: Elastic Net Regression Model One")),
+                              escape = FALSE) %>%
+  kable_styling(full_width = FALSE, font_size = "0.8rem", position = "center") %>%
+  row_spec(row = 0, bold = TRUE, background = "rgba(174, 209, 200, 0.4)") %>%
+  row_spec(row = 0:4, align = "center") %>% 
+  kable_classic(html_font = "Times New Roman") 
+
+#print elastic_parms1_kable table
+elastic_parms_kable
+
+```
+
+#### ii) Print Final Equation
+
+```{r, eval = FALSE}
+#extract the model (engine) from the final workflow 
+elastic_glm <- elastic_params_clean %>% 
+  extract_fit_engine()
+
+#print the parameterized equation from elastic net model one
+extract_eq(elastic_glm, use_coefs = TRUE, wrap = TRUE)
+
+```
+
+
+After evaluating both models, the **standard logistic regression model (A1)** was selected over the **elastic net (B1)** for final classification. While the elastic net model is valuable for reducing model complexity and minimizing overfitting through regularization, it tended to produce more conservative and overlapping probability estimates. In contrast, the standard logistic regression model consistently assigned predictions with high certainty (closer to 0 or 1), yielding clearer species separations. It also outperformed the elastic net model across several key evaluation metrics, including accuracy, sensitivity, and specificity. Given these results, and the fact that all four predictors were retained and meaningful in the standard model, it was deemed the more effective and interpretable approach for this classification task.
+
+
+## d) Final Model Selection
+
+To better understand how the final model performs across species classifications, we construct a confusion matrix. Each cell represents one of the four possible prediction outcomes: true positive, true negative, false positive, and false negative. This structure enables a clearer visual interpretation of model strengths and weaknesses in classifying [*Sabal etonia*]{style="color:#DCC27A;"} and [*Serenoa repens*]{style="color:#336886;"}.
+
+### i) Data Wrangling
+
+```{r}
+#create a confusion matrix to determine the classification accuracy
+final_cm <- final_standard1 %>%  
+  collect_predictions() %>% 
+  conf_mat(truth = name, estimate = .pred_class) %>% 
+  tidy() %>%
+  mutate(Actual = case_when(name == "cell_1_1" | name == "cell_1_2" ~ "Sabal etonia",
+                            name == "cell_2_1" | name == "cell_2_2" ~ "Serenoa repens"),
+         Prediction = case_when(name == "cell_1_1" | name == "cell_2_1" ~ "Sabal etonia",
+                                name == "cell_1_2" | name == "cell_2_2" ~ "Serenoa repens"),
+         classification = case_when(name == "cell_1_1" ~ "True Negative",  #correctly classified etonia
+                                    name == "cell_2_2" ~ "True Positive",  #correctly classified repens
+                                    name == "cell_1_2" ~ "False Positive", #misclassified etonia as repens
+                                    name == "cell_2_1" ~ "False Negative")) %>% #misclassified repens as etonia
+  mutate(error_color = case_when(name == "cell_1_1" | name == "cell_2_2" ~ "True",
+                                 name == "cell_2_1" | name == "cell_1_2" ~ "False")) 
+
+```
+
+### ii) Confusion Matrix
+
+The confusion matrix highlights how many plants were correctly and incorrectly classified by the final model. Both species show strong classification performance, with few false positives or false negatives. This supports the decision to select the standard logistic regression model as the final classifier since it performs consistently well across metrics and confidently distinguishes between the two Palmetto species.
+
+```{r}
+#create a heatmap to visualize the classification accuracy
+final_cm_plot <- ggplot(final_cm, aes(x = Prediction, y = Actual, fill = error_color)) +
+  geom_tile(color = "white") +
+  geom_richtext(aes(label = paste0("**", classification, "**<br>(",value, ")")),
+                size = 6, 
+                fill = NA,
+                hjust = 0.5, 
+                vjust = 0.5,
+                label.color = NA,  
+                family = "Times New Roman") +
+  scale_fill_manual(values = classification_colors, 
+                    name = "Classification") + 
+  labs(title = "Confusion Matrix for Standard Logistic Regression",
+       subtitle = "Final Model",
+       x = "Actual Species",
+       y = "Predicted Species") + 
+  facet_grid(Actual ~ Prediction, scales = "free", space = "free") +
+  theme(plot.title = element_text(family = "Times New Roman",
+                                  size = 16,
+                                  hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(family = "Times New Roman",
+                                     size = 12,
+                                     hjust = 0.5),
+        axis.title = element_text(family = "Times New Roman",
+                                  face = "bold",
+                                  size = 13),
+        axis.text = element_text(family = "Times New Roman", 
+                                 size = 10,
+                                 face = "italic"),
+        axis.text.y = element_text(angle = 90, 
+                                   hjust = 0.5,
+                                   vjust = 0.5),
+        strip.text = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(family = "Times New Roman",
+                                    face = "bold",
+                                    size = 10),
+        legend.text = element_text(family = "Times New Roman",
+                                   size = 10),
+        legend.box.background = element_rect(color = "black", size = 1))
+
+#print plot
+final_cm_plot
+
+```
+
+### iii) Prediction Probabilities
+
+```{r}
+#calculate final model prediction probabilities 
+final_predict <- final_standard1 %>% 
+  collect_predictions() %>% 
+  rename("prediction" = ".pred_class",
+         "etonia_prob" = ".pred_Sabal etonia",
+         "repens_prob" = ".pred_Serenoa repens",
+         "actual" = "name") %>% 
+  mutate(predicted_species = case_when(etonia_prob >= 0.50 ~ "Sabal etonia",
+                                       repens_prob >= 0.50 ~ "Serenoa repens"),
+         result = actual == predicted_species) %>% 
+  select(actual, prediction, etonia_prob, repens_prob, result)
+  
+#summarize classification performance
+classification_summary <- final_predict %>%
+  group_by(actual) %>%
+  summarize(total = n(),
+            correct = sum(result, na.rm = TRUE),
+            incorrect = sum(result == FALSE, na.rm = TRUE),
+            percent_correct = round((sum(correct) / n()) * 100, 2)) %>%
+  arrange(desc(percent_correct)) %>% 
+  relocate(total, .after = incorrect)
+
+#create a kable 
+classification_kable <- kable(classification_summary,
+                              col.names = c("Species", "Correctly Classified", "Incorrectly Classified", "Total Count", "Percent Correct"),
+                              kable_title = htmltools::tags$div(style = "text-align: center; font-size: 20px;", htmltools::tags$strong("Final Model Classification Accuracy")),
+                              escape = FALSE) %>%
+  kable_styling(full_width = FALSE, font_size = "0.8rem", position = "center") %>%
+  column_spec(column = 1, italic = TRUE) %>% 
+  row_spec(row = 0:2, align = "center") %>% 
+  row_spec(row = 0, bold = TRUE, italic = FALSE, background = "rgba(174, 209, 200, 0.4)") %>%
+  kable_classic(html_font = "Times New Roman") 
+
+#print the table
+classification_kable
+
+```
+
+The final **standard logistic regression model (A1)** demonstrated strong performance for both species, correctly classifying 91.75% of [*Sabal etonia*]{style="color:#DCC27A;"} plants and 88.74% of [*Serenoa repens*]{style="color:#336886;"}. False positives (n = 114) occurred when [*Sabal etonia*]{style="color:#DCC27A;"} individuals were misclassified as [*Serenoa repens*]{style="color:#336886;"}, while false negatives (n = 79) occurred in the opposite direction.
+
+Overall, the model performs slightly better on [*Sabal etonia*]{style="color:#DCC27A;"}, with fewer false negatives. These results suggest that the selected predictors (maximum height, canopy length, canopy width, and green leaf count) are effective in distinguishing the two species, and that the model generalizes well across the dataset.
